@@ -168,7 +168,7 @@ void ecrireBufferFlash();
 void configurerBLE();
 void demarrerEnvoi();
 void etapeEnvoi();
-void erreurFatale(uint8_t led);
+void erreurFatale(uint8_t led, const String &message);
 void logDouble(const String &s);
 
 // Envoie un message a la fois sur le port serie USB et sur
@@ -185,16 +185,27 @@ void logDouble(const String &s)
   }
 }
 
-// Clignote une LED en boucle (ROUGE = flash, BLEUE = IMU).
-// Le BLE continue d'emettre en arriere-plan.
-void erreurFatale(uint8_t led)
+// Clignote une LED en boucle (ROUGE = flash, BLEUE = IMU) et
+// RE-ENVOIE le message d'erreur en BLE toutes les 2 secondes,
+// pour qu'il soit visible meme si on se connecte APRES le
+// crash (le premier envoi, juste apres le boot, est presque
+// toujours manque).
+void erreurFatale(uint8_t led, const String &message)
 {
+  uint32_t dernierEnvoi = 0;
+
   while (1)
   {
     digitalWrite(led, LOW);
     delay(200);
     digitalWrite(led, HIGH);
     delay(200);
+
+    if (millis() - dernierEnvoi > 2000)
+    {
+      dernierEnvoi = millis();
+      logDouble(message);
+    }
   }
 }
 
@@ -239,7 +250,7 @@ void setup()
   if (!flash.begin(APPAREILS_POSSIBLES, 1))
   {
     logDouble("ERREUR FLASH");
-    erreurFatale(LED_RED);
+    erreurFatale(LED_RED, "ERREUR FLASH");
   }
 
   Serial.print("Flash OK, taille detectee : ");
@@ -253,7 +264,7 @@ void setup()
   if (!flash.eraseChip())
   {
     logDouble("ERREUR effacement flash");
-    erreurFatale(LED_RED);
+    erreurFatale(LED_RED, "ERREUR effacement flash");
   }
 
   flash.waitUntilReady();
@@ -314,7 +325,7 @@ void configurerBLE()
 {
   Bluefruit.begin();
   Bluefruit.setTxPower(4);
-  Bluefruit.setName("XIAO-IMU-LOGGER");
+  Bluefruit.setName("XIAO-IMU-LOGGER-V2");
 
   bleuart.begin();
 
@@ -515,7 +526,7 @@ void initialiserIMU()
   if (codeRetourIMU != 0)
   {
     logDouble("ERREUR IMU, code retour : " + String(codeRetourIMU));
-    erreurFatale(LED_BLUE);
+    erreurFatale(LED_BLUE, "ERREUR IMU, code retour : " + String(codeRetourIMU));
   }
 
   logDouble("IMU OK");
