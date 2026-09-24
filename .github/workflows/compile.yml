@@ -34,7 +34,14 @@ jobs:
       - name: Compiler
         run: |
           arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense --export-binaries logger_imu_ble_simple
-
+      
+      - name: Convertir en UF2
+        run: |
+          curl -sSL -o uf2conv.py https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py
+          HEX=$(find logger_imu_ble_simple/build -name "*.ino.hex" | head -1)
+          echo "Hex : $HEX"
+          python3 uf2conv.py "$HEX" -c -f 0xADA52840 -o logger_imu_ble_simple/build/firmware.uf2
+      
       - name: Publier le firmware compile (artefact)
         uses: actions/upload-artifact@v4
         with:
