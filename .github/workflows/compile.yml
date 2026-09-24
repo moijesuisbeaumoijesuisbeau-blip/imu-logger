@@ -25,7 +25,12 @@ jobs:
         run: |
           arduino-cli lib install "Seeed Arduino LSM6DS3"
           arduino-cli lib install "Adafruit SPIFlash"
-
+      
+      - name: Installer adafruit-nrfutil
+        run: |
+          pip3 install adafruit-nrfutil
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+      
       - name: Compiler
         run: |
           arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense --export-binaries logger_imu_ble_simple
