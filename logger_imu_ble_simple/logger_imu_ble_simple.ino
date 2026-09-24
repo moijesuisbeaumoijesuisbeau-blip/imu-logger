@@ -82,7 +82,7 @@ struct __attribute__((packed)) EnteteTransfert
   uint32_t indexAccelDebut;
   uint32_t indexGyroDebut;
 };
-
+struct EtatCompression;
 void initialiserIMU();
 void demarrerAcquisition();
 void remplirBuffer();
