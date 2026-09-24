@@ -174,6 +174,45 @@ void logDouble(const String &s);
 // Envoie un message a la fois sur le port serie USB et sur
 // le BLE Nordic UART, pour pouvoir lire les diagnostics
 // depuis nRF Connect (onglet UART) sans cable ni PC.
+// Envoie un buffer BLE en entier, en re-essayant tant que tout
+// n'est pas parti : bleuart.write() peut n'accepter qu'une partie
+// des octets demandes (tampon TX interne plein) et retourne alors
+// un nombre d'octets ecrits inferieur a ce qui a ete demande, sans
+// erreur explicite. Sans cette boucle, la fin du message est
+// silencieusement perdue (c'est ce qui coupait "ERREUR IMU, code
+// retour : X" apres "...code retour").
+void bleWriteComplet(const uint8_t *donnees, size_t longueur)
+{
+  size_t envoyes = 0;
+  uint32_t debut = millis();
+
+  while (envoyes < longueur)
+  {
+    if (!Bluefruit.connected())
+    {
+      return;
+    }
+
+    uint16_t n = bleuart.write(donnees + envoyes, longueur - envoyes);
+
+    if (n > 0)
+    {
+      envoyes += n;
+    }
+    else
+    {
+      // Tampon TX plein : laisser la pile BLE vider un peu avant
+      // de reessayer. Abandon apres 1s pour ne pas bloquer le
+      // reste du programme indefiniment si la connexion est morte.
+      if (millis() - debut > 1000)
+      {
+        return;
+      }
+      delay(2);
+    }
+  }
+}
+
 void logDouble(const String &s)
 {
   Serial.println(s);
@@ -181,7 +220,7 @@ void logDouble(const String &s)
   if (Bluefruit.connected())
   {
     String ligne = s + "\n";
-    bleuart.write((const uint8_t*)ligne.c_str(), ligne.length());
+    bleWriteComplet((const uint8_t*)ligne.c_str(), ligne.length());
   }
 }
 
@@ -874,7 +913,7 @@ void afficherStatistiques()
   if (Bluefruit.connected())
   {
     String ligneBLE = ligne + "\n";
-    bleuart.write((const uint8_t*)ligneBLE.c_str(), ligneBLE.length());
+    bleWriteComplet((const uint8_t*)ligneBLE.c_str(), ligneBLE.length());
   }
 }
 
