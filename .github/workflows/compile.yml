@@ -1,0 +1,38 @@
+name: Compile firmware XIAO
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Ajouter l'index de cartes Seeed et installer le core
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
+          arduino-cli core update-index
+          arduino-cli core install Seeeduino:nrf52
+
+      - name: Installer les librairies
+        run: |
+          arduino-cli lib install "Seeed Arduino LSM6DS3"
+          arduino-cli lib install "Adafruit SPIFlash"
+
+      - name: Compiler
+        run: |
+          arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense --export-binaries logger_imu_ble_simple
+
+      - name: Publier le firmware compile (artefact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: logger_imu_ble_simple/build/**
+          
