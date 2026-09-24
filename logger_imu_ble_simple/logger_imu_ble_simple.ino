@@ -6,15 +6,43 @@
 // Version simplifiee : plus de GPS, plus de SD/carte
 // d'extension. Uniquement l'acquisition IMU, le stockage
 // tampon sur la flash embarquee, et l'envoi Bluetooth.
+//
+// CORRECTIFS APPLIQUES (matériel XIAO Sense) :
+//  - Le capteur embarque est sur Wire1 (bus I2C interne
+//    separe), pas sur Wire (bus externe). Toutes les
+//    lectures FIFO manuelles utilisent donc Wire1.
+//  - Frequences d'echantillonnage exactes reconnues par
+//    la librairie : 6664 Hz (accel) et 1666 Hz (gyro),
+//    pas 6660/1660 comme on pourrait l'arrondir.
+//  - myIMU.settings.commMode = 1 ajoute (present dans
+//    l'exemple officiel qui fonctionne, absent avant).
+//
+// A VALIDER : la vitesse I2C ci-dessous (1 MHz) n'a
+// jamais ete testee sur Wire1 specifiquement (les tests
+// precedents a 1 MHz utilisaient Wire par erreur). Testez
+// d'abord avec le sketch de diagnostic minimal ; si ca
+// echoue, redescendre a Wire1.setClock(400000).
+//
+// AJOUT DIAGNOSTIC (cette version) :
+//  - Le BLE demarre EN PREMIER, avant flash et IMU, pour
+//    rester visible meme si l'un des deux echoue.
+//  - LED d'etat : bleu bref = BLE ok, rouge clignote =
+//    erreur flash, bleu clignote = erreur IMU, vert fixe
+//    = acquisition en cours.
 // =================================================
 
+
 #include <Adafruit_TinyUSB.h>
+
 #include <SPI.h>
 #include <Adafruit_SPIFlash.h>
+
 #include <bluefruit.h>
+
 #include <Wire.h>
 #include "LSM6DS3.h"
-struct EtatCompression;
+
+
 // =================================================
 // FLASH QSPI EMBARQUEE (2 Mo, puce P25Q16H)
 // =================================================
@@ -22,7 +50,7 @@ struct EtatCompression;
 Adafruit_FlashTransport_QSPI flashTransport;
 
 static SPIFlash_Device_t const P25Q16H_MANUEL = {
-  .total_size = (1UL << 21),
+  .total_size = (1UL << 21), // 2 MiB
   .start_up_time_us = 10000,
   .manufacturer_id = 0x85,
   .memory_type = 0x60,
@@ -42,16 +70,43 @@ static SPIFlash_Device_t const APPAREILS_POSSIBLES[] = { P25Q16H_MANUEL };
 
 Adafruit_SPIFlash flash(&flashTransport);
 
+
+// =================================================
+// BLE — NORDIC UART SERVICE (BLEUart)
+// =================================================
+
 BLEUart bleuart;
 
+
+// =================================================
+// IMU
+// =================================================
+
 #define IMU_ADDR 0x6A
+
 LSM6DS3 myIMU(I2C_MODE, IMU_ADDR);
 
+
+// =================================================
+// ACQUISITION
+// =================================================
+
 uint32_t debutAcquisition = 0;
+
 bool acquisition = false;
+
+
+// =================================================
+// TYPE D'ENREGISTREMENT
+// =================================================
 
 #define TYPE_ACCEL 0x01
 #define TYPE_GYRO  0x02
+
+
+// =================================================
+// STRUCTURE D'UN ENREGISTREMENT (12 octets)
+// =================================================
 
 struct __attribute__((packed)) Enregistrement
 {
@@ -63,25 +118,42 @@ struct __attribute__((packed)) Enregistrement
   int16_t z;
 };
 
+
+// =================================================
+// ENTETE MINIMALE SUR FLASH (adresse 0)
+// =================================================
+
 struct __attribute__((packed)) EnteteFlash
 {
-  char magic[4];
+  char magic[4]; // "IMU3"
   uint8_t version;
 };
 
 #define HEADER_SIZE sizeof(EnteteFlash)
 
+
+// =================================================
+// ENTETE ENVOYEE EN BLUETOOTH AU DEBUT DE CHAQUE ENVOI
+// =================================================
+
 struct __attribute__((packed)) EnteteTransfert
 {
-  char magic[4];
+  char magic[4]; // "IMUC"
   uint8_t version;
+
   uint32_t dureeMicros;
   uint32_t totalAccel;
   uint32_t totalGyro;
   uint32_t erreursGyro;
+
   uint32_t indexAccelDebut;
   uint32_t indexGyroDebut;
 };
+
+
+// =================================================
+// PROTOTYPES
+// =================================================
 
 void initialiserIMU();
 void demarrerAcquisition();
@@ -90,6 +162,25 @@ void ecrireBufferFlash();
 void configurerBLE();
 void demarrerEnvoi();
 void etapeEnvoi();
+void erreurFatale(uint8_t led);
+
+// Clignote une LED en boucle (ROUGE = flash, BLEUE = IMU).
+// Le BLE continue d'emettre en arriere-plan.
+void erreurFatale(uint8_t led)
+{
+  while (1)
+  {
+    digitalWrite(led, LOW);
+    delay(200);
+    digitalWrite(led, HIGH);
+    delay(200);
+  }
+}
+
+
+// =================================================
+// SETUP
+// =================================================
 
 void setup()
 {
@@ -104,12 +195,30 @@ void setup()
   Serial.println("LOGGER XIAO nRF52840 — FLASH + BLE (sans GPS)");
   Serial.println("=================================");
 
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_BLUE, OUTPUT);
+  digitalWrite(LED_RED, HIGH);
+  digitalWrite(LED_GREEN, HIGH);
+  digitalWrite(LED_BLUE, HIGH);
+
+  // BLE demarre EN PREMIER : la carte reste visible meme si
+  // la flash ou l'IMU echouent ensuite.
+  configurerBLE();
+  digitalWrite(LED_BLUE, LOW);   // bleu fixe = BLE demarre
+  delay(500);
+  digitalWrite(LED_BLUE, HIGH);
+
   Serial.println("Initialisation flash QSPI...");
+
+  // =================================================
+  // FLASH QSPI
+  // =================================================
 
   if (!flash.begin(APPAREILS_POSSIBLES, 1))
   {
     Serial.println("ERREUR FLASH");
-    while (1) delay(500);
+    erreurFatale(LED_RED);
   }
 
   Serial.print("Flash OK, taille detectee : ");
@@ -123,7 +232,7 @@ void setup()
   if (!flash.eraseChip())
   {
     Serial.println("ERREUR effacement flash");
-    while (1) delay(500);
+    erreurFatale(LED_RED);
   }
 
   flash.waitUntilReady();
@@ -132,10 +241,23 @@ void setup()
   Serial.print((millis() - t0) / 1000);
   Serial.println(" s");
 
+  // =================================================
+  // I2C (Wire1 : bus interne de la XIAO Sense, ou est
+  // cable le capteur embarque)
+  // =================================================
+
   Wire1.begin();
-  Wire1.setClock(1000000);
+  Wire1.setClock(1000000); // a valider avec le diagnostic ; sinon 400000
+
+  // =================================================
+  // IMU
+  // =================================================
 
   initialiserIMU();
+
+  // =================================================
+  // ENTETE MINIMALE SUR FLASH
+  // =================================================
 
   EnteteFlash entete;
   memcpy(entete.magic, "IMU3", 4);
@@ -145,13 +267,23 @@ void setup()
 
   Serial.println("Entete ecrite sur flash");
 
-  configurerBLE();
+  // (BLE deja demarre plus haut)
+
+  // =================================================
+  // DEMARRAGE ACQUISITION (immediat, pas de GPS a attendre)
+  // =================================================
 
   debutAcquisition = micros();
   acquisition = true;
 
   demarrerAcquisition();
+  digitalWrite(LED_GREEN, LOW);  // vert fixe = tout OK, acquisition en cours
 }
+
+
+// =================================================
+// CONFIGURATION BLE
+// =================================================
 
 void configurerBLE()
 {
@@ -172,8 +304,12 @@ void configurerBLE()
 
   Serial.println("BLE pret (nom : XIAO-IMU-LOGGER), en attente de connexion...");
 }
+// =================================================
+// BUFFERS RAM (double buffer)
+// =================================================
 
 #define TAILLE_BUFFER 6000
+
 #define SEUIL_ECRITURE ((TAILLE_BUFFER * 3) / 4)
 
 Enregistrement bufferA[TAILLE_BUFFER];
@@ -183,8 +319,15 @@ Enregistrement *bufferEcriture = bufferA;
 Enregistrement *bufferSD = bufferB;
 
 uint16_t indexBuffer = 0;
+
 uint16_t elementsSD = 0;
+
 bool blocPret = false;
+
+
+// =================================================
+// CAPACITE FLASH UTILE ET SEUIL D'ENVOI (3/4)
+// =================================================
 
 #define FLASH_TOTALE (2UL * 1024UL * 1024UL)
 #define FLASH_UTILE (FLASH_TOTALE - HEADER_SIZE)
@@ -192,7 +335,13 @@ bool blocPret = false;
 
 uint32_t curseurEcriture = 0;
 uint32_t curseurEnvoye = 0;
+
 bool envoiDejaDeclencheAuto = false;
+
+
+// =================================================
+// COMPTEURS
+// =================================================
 
 uint32_t compteurAccel = 0;
 uint32_t compteurGyro = 0;
@@ -202,13 +351,25 @@ uint32_t compteurErreursGyro = 0;
 uint32_t accelEnvoyes = 0;
 uint32_t gyroEnvoyes = 0;
 
+
+// =================================================
+// NOMBRE DE MOTS DISPONIBLES DANS LE FIFO (Wire1, rafale)
+// =================================================
+
 uint16_t lireNombreMotsFIFO()
 {
   Wire1.beginTransmission(IMU_ADDR);
   Wire1.write(0x3A);
 
-  if (Wire1.endTransmission(true) != 0) return 0;
-  if (Wire1.requestFrom(IMU_ADDR, (uint8_t)2) != 2) return 0;
+  if (Wire1.endTransmission(true) != 0)
+  {
+    return 0;
+  }
+
+  if (Wire1.requestFrom(IMU_ADDR, (uint8_t)2) != 2)
+  {
+    return 0;
+  }
 
   uint8_t status1 = Wire1.read();
   uint8_t status2 = Wire1.read();
@@ -218,13 +379,25 @@ uint16_t lireNombreMotsFIFO()
   return status & 0x0FFF;
 }
 
+
+// =================================================
+// LECTURE PATTERN + MOT FIFO (Wire1, rafale 4 octets)
+// =================================================
+
 bool lireMotEtPatternFIFO(uint16_t &pattern, int16_t &valeur)
 {
   Wire1.beginTransmission(IMU_ADDR);
   Wire1.write(0x3C);
 
-  if (Wire1.endTransmission(true) != 0) return false;
-  if (Wire1.requestFrom(IMU_ADDR, (uint8_t)4) != 4) return false;
+  if (Wire1.endTransmission(true) != 0)
+  {
+    return false;
+  }
+
+  if (Wire1.requestFrom(IMU_ADDR, (uint8_t)4) != 4)
+  {
+    return false;
+  }
 
   uint8_t patternL = Wire1.read();
   uint8_t patternH = Wire1.read();
@@ -232,19 +405,29 @@ bool lireMotEtPatternFIFO(uint16_t &pattern, int16_t &valeur)
   uint8_t donneeH  = Wire1.read();
 
   pattern = patternL | ((uint16_t)(patternH & 0x03) << 8);
+
   valeur = (int16_t)((uint16_t)donneeL | ((uint16_t)donneeH << 8));
 
   return true;
 }
+
+
+// =================================================
+// AJOUT ACCEL / GYRO
+// =================================================
 
 void ajouterAccel(int16_t x, int16_t y, int16_t z)
 {
   Enregistrement &e = bufferEcriture[indexBuffer];
 
   e.temps = (uint32_t)(((uint64_t)compteurAccel * 1000000ULL) / 6664ULL);
+
   e.type = TYPE_ACCEL;
   e.reserve = 0;
-  e.x = x; e.y = y; e.z = z;
+
+  e.x = x;
+  e.y = y;
+  e.z = z;
 
   indexBuffer++;
   compteurAccel++;
@@ -256,14 +439,23 @@ void ajouterGyro(int16_t x, int16_t y, int16_t z)
   Enregistrement &e = bufferEcriture[indexBuffer];
 
   e.temps = (uint32_t)(((uint64_t)compteurGyro * 1000000ULL) / 1666ULL);
+
   e.type = TYPE_GYRO;
   e.reserve = 0;
-  e.x = x; e.y = y; e.z = z;
+
+  e.x = x;
+  e.y = y;
+  e.z = z;
 
   indexBuffer++;
   compteurGyro++;
   compteurTotal++;
 }
+
+
+// =================================================
+// CONFIGURATION IMU
+// =================================================
 
 void initialiserIMU()
 {
@@ -271,14 +463,14 @@ void initialiserIMU()
 
   myIMU.settings.gyroEnabled = 1;
   myIMU.settings.gyroRange = 2000;
-  myIMU.settings.gyroSampleRate = 1666;
+  myIMU.settings.gyroSampleRate = 1666; // valeur exacte reconnue (pas 1660)
   myIMU.settings.gyroBandWidth = 200;
   myIMU.settings.gyroFifoEnabled = 1;
   myIMU.settings.gyroFifoDecimation = 1;
 
   myIMU.settings.accelEnabled = 1;
   myIMU.settings.accelRange = 16;
-  myIMU.settings.accelSampleRate = 6664;
+  myIMU.settings.accelSampleRate = 6664; // valeur exacte reconnue (pas 6660)
   myIMU.settings.accelBandWidth = 200;
   myIMU.settings.accelFifoEnabled = 1;
   myIMU.settings.accelFifoDecimation = 1;
@@ -291,16 +483,21 @@ void initialiserIMU()
   myIMU.settings.fifoSampleRate = 6600;
   myIMU.settings.fifoModeWord = 6;
 
-  myIMU.settings.commMode = 1;
+  myIMU.settings.commMode = 1; // present dans l'exemple officiel, ajoute ici
 
   if (myIMU.begin() != 0)
   {
     Serial.println("ERREUR IMU");
-    while (1) delay(500);
+    erreurFatale(LED_BLUE);
   }
 
   Serial.println("IMU OK");
 }
+
+
+// =================================================
+// DEMARRAGE FIFO
+// =================================================
 
 void demarrerAcquisition()
 {
@@ -322,6 +519,11 @@ void demarrerAcquisition()
   Serial.println("GYRO  : 1666 Hz");
 }
 
+
+// =================================================
+// LECTURE D'UN BLOC FIFO
+// =================================================
+
 int16_t etatGx = 0, etatGy = 0, etatGz = 0;
 uint8_t etapeGyro = 0;
 
@@ -334,22 +536,40 @@ void remplirBuffer()
 {
   uint16_t motsDisponibles = lireNombreMotsFIFO();
 
-  if (motsDisponibles == 0) return;
+  if (motsDisponibles == 0)
+  {
+    return;
+  }
 
   uint16_t aLire = motsDisponibles;
-  if (aLire > LIMITE_MOTS_PAR_APPEL) aLire = LIMITE_MOTS_PAR_APPEL;
+
+  if (aLire > LIMITE_MOTS_PAR_APPEL)
+  {
+    aLire = LIMITE_MOTS_PAR_APPEL;
+  }
 
   for (uint16_t i = 0; i < aLire; i++)
   {
     uint16_t pattern;
     int16_t valeur;
 
-    if (!lireMotEtPatternFIFO(pattern, valeur)) break;
+    if (!lireMotEtPatternFIFO(pattern, valeur))
+    {
+      break;
+    }
 
     if (pattern <= 2)
     {
-      if (pattern == 0) { etatGx = valeur; etapeGyro = 1; }
-      else if (pattern == 1 && etapeGyro == 1) { etatGy = valeur; etapeGyro = 2; }
+      if (pattern == 0)
+      {
+        etatGx = valeur;
+        etapeGyro = 1;
+      }
+      else if (pattern == 1 && etapeGyro == 1)
+      {
+        etatGy = valeur;
+        etapeGyro = 2;
+      }
       else if (pattern == 2 && etapeGyro == 2)
       {
         etatGz = valeur;
@@ -364,9 +584,21 @@ void remplirBuffer()
     }
     else
     {
-      if (etapeAccel == 0) { etatAx = valeur; etapeAccel = 1; }
-      else if (etapeAccel == 1) { etatAy = valeur; etapeAccel = 2; }
-      else { ajouterAccel(etatAx, etatAy, valeur); etapeAccel = 0; }
+      if (etapeAccel == 0)
+      {
+        etatAx = valeur;
+        etapeAccel = 1;
+      }
+      else if (etapeAccel == 1)
+      {
+        etatAy = valeur;
+        etapeAccel = 2;
+      }
+      else
+      {
+        ajouterAccel(etatAx, etatAy, valeur);
+        etapeAccel = 0;
+      }
     }
 
     if (indexBuffer >= SEUIL_ECRITURE)
@@ -377,18 +609,29 @@ void remplirBuffer()
 
       elementsSD = indexBuffer;
       indexBuffer = 0;
+
       blocPret = true;
+
       return;
     }
   }
 }
 
+
+// =================================================
+// ECRITURE BUFFER SUR FLASH
+// =================================================
+
 void ecrireBufferFlash()
 {
   size_t octets = sizeof(Enregistrement) * elementsSD;
+
   uint32_t restant = FLASH_UTILE - curseurEcriture;
 
-  if (octets > restant) octets = (restant / sizeof(Enregistrement)) * sizeof(Enregistrement);
+  if (octets > restant)
+  {
+    octets = (restant / sizeof(Enregistrement)) * sizeof(Enregistrement);
+  }
 
   if (octets > 0)
   {
@@ -405,6 +648,9 @@ void ecrireBufferFlash()
   Serial.print((curseurEcriture * 100UL) / FLASH_UTILE);
   Serial.println("% flash utilisee");
 }
+// =================================================
+// COMPRESSION DELTA + ENVOI BLE (Nordic UART)
+// =================================================
 
 struct EtatCompression
 {
@@ -415,6 +661,7 @@ struct EtatCompression
 EtatCompression etatCompressionEnvoi;
 
 bool envoiEnCours = false;
+
 uint32_t curseurLecture = 0;
 uint32_t limiteEnvoi = 0;
 
@@ -424,9 +671,11 @@ uint32_t limiteEnvoi = 0;
 uint8_t tamponEnvoi[TAILLE_TAMPON_ENVOI];
 uint16_t positionTampon = 0;
 
+
 size_t encoderEnregistrement(const Enregistrement &e, EtatCompression &etat, uint8_t *sortie)
 {
   int16_t *ref = (e.type == TYPE_GYRO) ? etat.refGyro : etat.refAccel;
+
   uint8_t tag = (e.type == TYPE_GYRO) ? 0x80 : 0x00;
 
   int16_t valeurs[3] = { e.x, e.y, e.z };
@@ -458,11 +707,26 @@ size_t encoderEnregistrement(const Enregistrement &e, EtatCompression &etat, uin
   return 1 + pos;
 }
 
+
 void demarrerEnvoi()
 {
-  if (envoiEnCours) { Serial.println("Envoi deja en cours."); return; }
-  if (curseurEnvoye >= curseurEcriture) { Serial.println("Rien de nouveau a envoyer."); return; }
-  if (!Bluefruit.connected()) { Serial.println("Aucun appareil BLE connecte."); return; }
+  if (envoiEnCours)
+  {
+    Serial.println("Envoi deja en cours.");
+    return;
+  }
+
+  if (curseurEnvoye >= curseurEcriture)
+  {
+    Serial.println("Rien de nouveau a envoyer.");
+    return;
+  }
+
+  if (!Bluefruit.connected())
+  {
+    Serial.println("Aucun appareil BLE connecte : envoi impossible pour l'instant.");
+    return;
+  }
 
   limiteEnvoi = curseurEcriture;
   curseurLecture = curseurEnvoye;
@@ -476,8 +740,10 @@ void demarrerEnvoi()
 
   entete.dureeMicros = micros() - debutAcquisition;
   entete.erreursGyro = compteurErreursGyro;
+
   entete.indexAccelDebut = accelEnvoyes;
   entete.indexGyroDebut = gyroEnvoyes;
+
   entete.totalAccel = compteurAccel - accelEnvoyes;
   entete.totalGyro = compteurGyro - gyroEnvoyes;
 
@@ -490,6 +756,7 @@ void demarrerEnvoi()
   Serial.println(" octets bruts a compresser et transmettre.");
 }
 
+
 void etapeEnvoi()
 {
   uint8_t tamponRecord[8];
@@ -499,6 +766,7 @@ void etapeEnvoi()
     Enregistrement e;
 
     flash.readBuffer(HEADER_SIZE + curseurLecture, (uint8_t*)&e, sizeof(Enregistrement));
+
     curseurLecture += sizeof(Enregistrement);
 
     size_t taille = encoderEnregistrement(e, etatCompressionEnvoi, tamponRecord);
@@ -512,8 +780,14 @@ void etapeEnvoi()
     memcpy(&tamponEnvoi[positionTampon], tamponRecord, taille);
     positionTampon += taille;
 
-    if (e.type == TYPE_ACCEL) accelEnvoyes++;
-    else gyroEnvoyes++;
+    if (e.type == TYPE_ACCEL)
+    {
+      accelEnvoyes++;
+    }
+    else
+    {
+      gyroEnvoyes++;
+    }
   }
 
   if (curseurLecture >= limiteEnvoi)
@@ -531,13 +805,21 @@ void etapeEnvoi()
   }
 }
 
+
+// =================================================
+// STATISTIQUES
+// =================================================
+
 void afficherStatistiques()
 {
   static uint32_t derniereAffichage = 0;
   static uint32_t dernierAccel = 0;
   static uint32_t dernierGyro = 0;
 
-  if (millis() - derniereAffichage < 1000) return;
+  if (millis() - derniereAffichage < 1000)
+  {
+    return;
+  }
 
   derniereAffichage = millis();
 
@@ -561,6 +843,11 @@ void afficherStatistiques()
   Serial.println(Bluefruit.connected() ? "connecte" : "en attente");
 }
 
+
+// =================================================
+// LOOP
+// =================================================
+
 void loop()
 {
   if (acquisition)
@@ -570,29 +857,4 @@ void loop()
     if (blocPret)
     {
       blocPret = false;
-      ecrireBufferFlash();
-    }
-
-    afficherStatistiques();
-
-    if (!envoiDejaDeclencheAuto && curseurEcriture >= SEUIL_FLASH)
-    {
-      envoiDejaDeclencheAuto = true;
-      demarrerEnvoi();
-    }
-
-    if (curseurEcriture >= FLASH_UTILE)
-    {
-      acquisition = false;
-      Serial.println("Flash pleine : acquisition arretee.");
-    }
-  }
-
-  if (Serial.available())
-  {
-    char c = Serial.read();
-    if (c == 's' || c == 'S') demarrerEnvoi();
-  }
-
-  if (envoiEnCours) etapeEnvoi();
-}
+      ecri
