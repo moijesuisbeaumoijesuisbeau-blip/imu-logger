@@ -126,6 +126,19 @@ struct __attribute__((packed)) EnteteFlash
 
 
 // =================================================
+// ETAT DE COMPRESSION (declare tot : sinon le prototype
+// auto-genere par Arduino, insere en haut du fichier,
+// reference ce type avant sa definition)
+// =================================================
+
+struct EtatCompression
+{
+  int16_t refAccel[3] = {0, 0, 0};
+  int16_t refGyro[3]  = {0, 0, 0};
+};
+
+
+// =================================================
 // ENTETE ENVOYEE EN BLUETOOTH AU DEBUT DE CHAQUE ENVOI
 // =================================================
 
@@ -648,12 +661,6 @@ void ecrireBufferFlash()
 // =================================================
 // COMPRESSION DELTA + ENVOI BLE (Nordic UART)
 // =================================================
-
-struct EtatCompression
-{
-  int16_t refAccel[3] = {0, 0, 0};
-  int16_t refGyro[3]  = {0, 0, 0};
-};
 
 EtatCompression etatCompressionEnvoi;
 
