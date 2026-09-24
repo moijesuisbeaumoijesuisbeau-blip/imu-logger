@@ -14,7 +14,7 @@
 #include <bluefruit.h>
 #include <Wire.h>
 #include "LSM6DS3.h"
-
+struct EtatCompression;
 // =================================================
 // FLASH QSPI EMBARQUEE (2 Mo, puce P25Q16H)
 // =================================================
@@ -82,7 +82,7 @@ struct __attribute__((packed)) EnteteTransfert
   uint32_t indexAccelDebut;
   uint32_t indexGyroDebut;
 };
-struct EtatCompression;
+
 void initialiserIMU();
 void demarrerAcquisition();
 void remplirBuffer();
