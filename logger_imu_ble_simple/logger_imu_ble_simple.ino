@@ -169,6 +169,21 @@ void configurerBLE();
 void demarrerEnvoi();
 void etapeEnvoi();
 void erreurFatale(uint8_t led);
+void logDouble(const String &s);
+
+// Envoie un message a la fois sur le port serie USB et sur
+// le BLE Nordic UART, pour pouvoir lire les diagnostics
+// depuis nRF Connect (onglet UART) sans cable ni PC.
+void logDouble(const String &s)
+{
+  Serial.println(s);
+
+  if (Bluefruit.connected())
+  {
+    String ligne = s + "\n";
+    bleuart.write((const uint8_t*)ligne.c_str(), ligne.length());
+  }
+}
 
 // Clignote une LED en boucle (ROUGE = flash, BLEUE = IMU).
 // Le BLE continue d'emettre en arriere-plan.
@@ -223,7 +238,7 @@ void setup()
 
   if (!flash.begin(APPAREILS_POSSIBLES, 1))
   {
-    Serial.println("ERREUR FLASH");
+    logDouble("ERREUR FLASH");
     erreurFatale(LED_RED);
   }
 
@@ -237,7 +252,7 @@ void setup()
 
   if (!flash.eraseChip())
   {
-    Serial.println("ERREUR effacement flash");
+    logDouble("ERREUR effacement flash");
     erreurFatale(LED_RED);
   }
 
@@ -253,7 +268,7 @@ void setup()
   // =================================================
 
   Wire1.begin();
-  Wire1.setClock(1000000); // a valider avec le diagnostic ; sinon 400000
+  Wire1.setClock(400000); // 1 MHz non fiable sur Wire1 : on reste a 400 kHz
 
   // =================================================
   // IMU
@@ -495,13 +510,15 @@ void initialiserIMU()
 
   myIMU.settings.commMode = 1; // present dans l'exemple officiel, ajoute ici
 
-  if (myIMU.begin() != 0)
+  int codeRetourIMU = myIMU.begin();
+
+  if (codeRetourIMU != 0)
   {
-    Serial.println("ERREUR IMU");
+    logDouble("ERREUR IMU, code retour : " + String(codeRetourIMU));
     erreurFatale(LED_BLUE);
   }
 
-  Serial.println("IMU OK");
+  logDouble("IMU OK");
 }
 
 
@@ -833,18 +850,21 @@ void afficherStatistiques()
   dernierAccel = compteurAccel;
   dernierGyro = compteurGyro;
 
-  Serial.print("ACCEL/s = ");
-  Serial.print(accel);
-  Serial.print(" | GYRO/s = ");
-  Serial.print(gyro);
-  Serial.print(" | Erreurs gyro = ");
-  Serial.print(compteurErreursGyro);
-  Serial.print(" | FIFO mots = ");
-  Serial.print(lireNombreMotsFIFO());
-  Serial.print(" | Flash = ");
-  Serial.print((curseurEcriture * 100UL) / FLASH_UTILE);
-  Serial.print("% | BLE = ");
-  Serial.println(Bluefruit.connected() ? "connecte" : "en attente");
+  String ligne = "ACCEL/s=" + String(accel)
+               + " GYRO/s=" + String(gyro)
+               + " ErrGyro=" + String(compteurErreursGyro)
+               + " FIFOmots=" + String(lireNombreMotsFIFO())
+               + " Flash=" + String((curseurEcriture * 100UL) / FLASH_UTILE) + "%";
+
+  // Sur le port USB (si branche) et sur le BLE (toujours,
+  // vu qu'on est deja connecte pour lire ce message).
+  Serial.println(ligne);
+
+  if (Bluefruit.connected())
+  {
+    String ligneBLE = ligne + "\n";
+    bleuart.write((const uint8_t*)ligneBLE.c_str(), ligneBLE.length());
+  }
 }
 
 
