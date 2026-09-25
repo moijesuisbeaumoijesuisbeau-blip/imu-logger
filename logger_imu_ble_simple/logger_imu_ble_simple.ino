@@ -1,18 +1,6 @@
-// =================================================
-// DIAGNOSTIC MINIMAL I2C — XIAO nRF52840 Sense
-// V2 : teste Wire ET Wire1, pour determiner lequel des
-// deux bus porte reellement l'IMU embarque (ca depend de
-// la version du core Seeeduino installee).
-//
-// LED :
-//  - VERTE fixe = peripherique trouve sur Wire  (bus externe/D4-D5)
-//  - BLEUE fixe = peripherique trouve sur Wire1 (bus interne)
-//  - Les deux allumees = trouve sur les deux (rare)
-//  - ROUGE fixe = rien trouve nulle part -> probleme d'alimentation
-//    du capteur ou de cablage materiel, pas juste le bus.
-// =================================================
-
 #include <Wire.h>
+
+#define PIN_IMU_POWER 15
 
 bool scanBus(TwoWire &bus, const char *nomBus)
 {
@@ -66,8 +54,16 @@ void setup()
 
   Serial.println();
   Serial.println("=================================");
-  Serial.println("DIAGNOSTIC I2C — Wire et Wire1");
+  Serial.println("DIAGNOSTIC I2C — avec activation alimentation IMU (pin 15)");
   Serial.println("=================================");
+
+  // ETAPE CLE : activer l'alimentation de l'IMU AVANT tout
+  // le reste (avant Wire.begin()/Wire1.begin(), pour ne pas
+  // "phantom power" le capteur via les pull-ups I2C).
+  pinMode(PIN_IMU_POWER, OUTPUT);
+  digitalWrite(PIN_IMU_POWER, HIGH);
+  Serial.println("Pin 15 (alimentation IMU) mis a HIGH.");
+  delay(20); // marge par rapport aux ~3ms requis par le regulateur
 
   bool trouveWire  = scanBus(Wire,  "Wire  (bus externe)");
   bool trouveWire1 = scanBus(Wire1, "Wire1 (bus interne)");
@@ -76,21 +72,20 @@ void setup()
 
   if (!trouveWire && !trouveWire1)
   {
-    Serial.println("CONCLUSION : rien trouve sur AUCUN des deux bus.");
-    Serial.println("-> Probleme d'alimentation du capteur (pin d'activation manquant),");
-    Serial.println("   de soudure, ou ce n'est pas une variante Sense avec IMU embarque.");
+    Serial.println("CONCLUSION : toujours rien, meme avec l'alimentation activee.");
+    Serial.println("-> Le pin 15 n'est peut-etre pas le bon sur ta variante exacte, ou souci materiel.");
     digitalWrite(LED_RED, LOW);
   }
   else
   {
     if (trouveWire)
     {
-      Serial.println("CONCLUSION PARTIELLE : le capteur repond sur WIRE (pas Wire1).");
+      Serial.println("SUCCES sur WIRE !");
       digitalWrite(LED_GREEN, LOW);
     }
     if (trouveWire1)
     {
-      Serial.println("CONCLUSION PARTIELLE : le capteur repond sur WIRE1.");
+      Serial.println("SUCCES sur WIRE1 !");
       digitalWrite(LED_BLUE, LOW);
     }
   }
