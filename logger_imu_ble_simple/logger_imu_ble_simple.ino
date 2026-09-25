@@ -1,42 +1,7 @@
-#include <Wire.h>
+#include "LSM6DS3.h"
+#include "Wire.h"
 
-#define PIN_IMU_POWER 15
-
-bool scanBus(TwoWire &bus, const char *nomBus)
-{
-  Serial.print("Scan sur ");
-  Serial.print(nomBus);
-  Serial.println(" ...");
-
-  bus.begin();
-  bus.setClock(400000);
-
-  int trouves = 0;
-
-  for (uint8_t addr = 0x08; addr <= 0x77; addr++)
-  {
-    bus.beginTransmission(addr);
-    uint8_t erreur = bus.endTransmission();
-
-    if (erreur == 0)
-    {
-      trouves++;
-      Serial.print("  -> Peripherique trouve sur ");
-      Serial.print(nomBus);
-      Serial.print(" a l'adresse 0x");
-      if (addr < 16) Serial.print("0");
-      Serial.println(addr, HEX);
-    }
-  }
-
-  if (trouves == 0)
-  {
-    Serial.print("  Rien trouve sur ");
-    Serial.println(nomBus);
-  }
-
-  return trouves > 0;
-}
+LSM6DS3 myIMU(I2C_MODE, 0x6A);
 
 void setup()
 {
@@ -47,47 +12,28 @@ void setup()
 
   pinMode(LED_RED, OUTPUT);
   pinMode(LED_GREEN, OUTPUT);
-  pinMode(LED_BLUE, OUTPUT);
   digitalWrite(LED_RED, HIGH);
   digitalWrite(LED_GREEN, HIGH);
-  digitalWrite(LED_BLUE, HIGH);
 
   Serial.println();
   Serial.println("=================================");
-  Serial.println("DIAGNOSTIC I2C — avec activation alimentation IMU (pin 15)");
+  Serial.println("TEST minimal, config identique a l'exemple officiel Seeed (Wire, 0x6A)");
   Serial.println("=================================");
 
-  // ETAPE CLE : activer l'alimentation de l'IMU AVANT tout
-  // le reste (avant Wire.begin()/Wire1.begin(), pour ne pas
-  // "phantom power" le capteur via les pull-ups I2C).
-  pinMode(PIN_IMU_POWER, OUTPUT);
-  digitalWrite(PIN_IMU_POWER, HIGH);
-  Serial.println("Pin 15 (alimentation IMU) mis a HIGH.");
-  delay(20); // marge par rapport aux ~3ms requis par le regulateur
+  int code = myIMU.begin();
 
-  bool trouveWire  = scanBus(Wire,  "Wire  (bus externe)");
-  bool trouveWire1 = scanBus(Wire1, "Wire1 (bus interne)");
+  Serial.print("myIMU.begin() a renvoye : ");
+  Serial.println(code);
 
-  Serial.println();
-
-  if (!trouveWire && !trouveWire1)
+  if (code == 0)
   {
-    Serial.println("CONCLUSION : toujours rien, meme avec l'alimentation activee.");
-    Serial.println("-> Le pin 15 n'est peut-etre pas le bon sur ta variante exacte, ou souci materiel.");
-    digitalWrite(LED_RED, LOW);
+    Serial.println("SUCCES : l'IMU repond avec la config par defaut.");
+    digitalWrite(LED_GREEN, LOW);
   }
   else
   {
-    if (trouveWire)
-    {
-      Serial.println("SUCCES sur WIRE !");
-      digitalWrite(LED_GREEN, LOW);
-    }
-    if (trouveWire1)
-    {
-      Serial.println("SUCCES sur WIRE1 !");
-      digitalWrite(LED_BLUE, LOW);
-    }
+    Serial.println("ECHEC meme avec la config par defaut (Wire, 0x6A, sans reglages custom).");
+    digitalWrite(LED_RED, LOW);
   }
 
   Serial.println("=================================");
@@ -95,4 +41,13 @@ void setup()
 
 void loop()
 {
+  if (Serial.available())
+  {
+    char c = Serial.read();
+    if (c == 'r' || c == 'R')
+    {
+      Serial.print("Accel X = ");
+      Serial.println(myIMU.readFloatAccelX());
+    }
+  }
 }
